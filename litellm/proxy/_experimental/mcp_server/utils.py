@@ -326,12 +326,41 @@ def iter_known_server_prefixes(server: Any) -> Iterator[str]:
 
 
 def split_server_prefix_from_name(prefixed_name: str) -> Tuple[str, str]:
-    """Return the unprefixed name plus the server name used as prefix."""
+    """Return the unprefixed name plus the server name used as prefix.
+
+    Cuts at the FIRST separator, so the two halves are only trustworthy as a
+    pair: they reassemble into ``prefixed_name`` exactly, which is what makes
+    this safe for routing. Reading one half on its own is a guess about where the
+    boundary fell, and that guess is wrong whenever the prefix itself contains
+    the separator. Callers that compare a half against configuration must use
+    :func:`match_known_server_prefix` or :func:`strip_known_server_prefix`.
+    """
     if MCP_TOOL_PREFIX_SEPARATOR in prefixed_name:
         parts = prefixed_name.split(MCP_TOOL_PREFIX_SEPARATOR, 1)
         if len(parts) == 2:
             return parts[1], parts[0]
     return prefixed_name, ""
+
+
+def match_known_server_prefix(name: str, known_prefixes: Iterable[str]) -> tuple[str, str] | None:
+    """Return ``(matched_prefix, bare_name)`` when ``name`` carries a known prefix.
+
+    Candidates are normalised and tried LONGEST first, so a prefix that itself
+    contains :data:`MCP_TOOL_PREFIX_SEPARATOR` (the UUID ``server_id`` used when
+    a server has no alias, or a legacy hyphenated alias) wins over a shorter
+    prefix that is merely its leading segment. Returns ``None`` when no candidate
+    matches, i.e. ``name`` carries none of these prefixes.
+    """
+    candidates = sorted(
+        {normalize_server_name(prefix) for prefix in known_prefixes if prefix},
+        key=len,
+        reverse=True,
+    )
+    for prefix in candidates:
+        separator_suffixed = prefix + MCP_TOOL_PREFIX_SEPARATOR
+        if name.startswith(separator_suffixed):
+            return prefix, name[len(separator_suffixed) :]
+    return None
 
 
 def strip_known_server_prefix(name: str, server: Optional[Any]) -> str:
@@ -351,11 +380,8 @@ def strip_known_server_prefix(name: str, server: Optional[Any]) -> str:
     """
     if server is None:
         return split_server_prefix_from_name(name)[0]
-    for prefix in iter_known_server_prefixes(server):
-        candidate = normalize_server_name(prefix) + MCP_TOOL_PREFIX_SEPARATOR
-        if name.startswith(candidate):
-            return name[len(candidate) :]
-    return name
+    matched = match_known_server_prefix(name, iter_known_server_prefixes(server))
+    return name if matched is None else matched[1]
 
 
 def is_tool_name_prefixed(
@@ -366,8 +392,9 @@ def is_tool_name_prefixed(
     Check if tool name has a known MCP server prefix.
 
     When ``known_server_prefixes`` is provided the function verifies that the
-    substring before the first separator is an actual registered server
-    prefix.  Without it the check falls back to the legacy heuristic
+    name actually starts with one of those prefixes followed by the separator,
+    matching the longest candidate first so a prefix containing the separator
+    still resolves.  Without it the check falls back to the legacy heuristic
     (separator present anywhere in the name), which can produce false
     positives for non-MCP tools whose names contain hyphens
     (e.g. ``text-to-speech``, ``code-review``).
@@ -386,8 +413,7 @@ def is_tool_name_prefixed(
         return False
 
     if known_server_prefixes is not None:
-        candidate_prefix = tool_name.split(MCP_TOOL_PREFIX_SEPARATOR, 1)[0]
-        return normalize_server_name(candidate_prefix) in known_server_prefixes
+        return match_known_server_prefix(tool_name, known_server_prefixes) is not None
 
     # Legacy fallback – separator present somewhere in the name.
     return True
