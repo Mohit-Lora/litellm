@@ -5,6 +5,8 @@ services:
       args:
         target: runtime
     image: docker.litellm.ai/berriai/litellm:main-stable
+    cpus: '0.5'
+    mem_limit: 1g
     #########################################
     ## Uncomment these lines to start proxy with a config.yaml file ##
     # volumes:
